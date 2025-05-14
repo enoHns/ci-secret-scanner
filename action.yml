@@ -1,0 +1,33 @@
+name: 'secret-scanner'
+description: 'Scan workflows and dependencies for exposed secrets and vulnerabilities'
+author: 'Hénoc HOUNSA'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  github-token:
+    description: 'GitHub token with contents:read permission'
+    required: true
+    default: ${{ github.token }}
+
+  post-comment:
+    description: 'Post findings as a PR comment'
+    required: false
+    default: 'true'
+
+  fail-on-critical:
+    description: 'Fail the step if critical secrets are found'
+    required: false
+    default: 'false'
+
+outputs:
+  critical-count:
+    description: 'Number of critical findings'
+  high-count:
+    description: 'Number of high-severity findings'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
