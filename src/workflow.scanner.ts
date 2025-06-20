@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 import { Finding } from './types'
+import { getRepoFiles } from './git.utils'
 
 export async function scanWorkflowRisks(
   octokit: Octokit,
@@ -8,17 +9,12 @@ export async function scanWorkflowRisks(
   repo: string,
 ): Promise<Finding[]> {
   core.info('Scanning for workflow security risks...')
-
   const findings: Finding[] = []
 
   let workflows: { path: string; sha: string }[] = []
   try {
-    const { data: tree } = await octokit.git.getTree({
-      owner, repo, tree_sha: 'HEAD', recursive: '1',
-    })
-    workflows = tree.tree
-      .filter(f => f.path?.startsWith('.github/workflows/') && (f.path.endsWith('.yml') || f.path.endsWith('.yaml')))
-      .map(f => ({ path: f.path!, sha: f.sha! }))
+    const allFiles = await getRepoFiles(octokit, owner, repo, '.github/workflows/')
+    workflows = allFiles.filter(f => f.path.endsWith('.yml') || f.path.endsWith('.yaml'))
   } catch {
     return []
   }
@@ -28,43 +24,33 @@ export async function scanWorkflowRisks(
       const { data: blob } = await octokit.git.getBlob({ owner, repo, file_sha: file.sha })
       const content = Buffer.from(blob.content, 'base64').toString('utf8')
 
-      // Risk: pull_request_target with checkout of PR code (script injection vector)
-      if (content.includes('pull_request_target') && content.includes('ref: ${{ github.event.pull_request.head.sha }}')) {
+      if (content.includes('pull_request_target') && content.includes('github.event.pull_request.head.sha')) {
         findings.push({
-          severity: 'critical',
-          type:     'workflow-risk',
-          file:     file.path,
+          severity: 'critical', type: 'workflow-risk', file: file.path,
           message:  'pull_request_target with PR head checkout — script injection risk',
-          detail:   'Checking out untrusted PR code in a pull_request_target context grants write permissions to external code.',
-          fix:      'Use pull_request instead, or add explicit permissions: read-only and avoid checking out PR head ref.',
+          detail:   'Checking out untrusted PR code in pull_request_target grants write permissions to external code.',
+          fix:      'Use pull_request instead, or restrict permissions and avoid checking out PR head.',
         })
       }
 
-      // Risk: unpinned third-party actions (uses: actions/checkout@main instead of @v4)
       const unpinnedActions = content.match(/uses:\s+[^@\s]+@(?:main|master|latest)/g) ?? []
       for (const action of unpinnedActions) {
         findings.push({
-          severity: 'medium',
-          type:     'workflow-risk',
-          file:     file.path,
+          severity: 'medium', type: 'workflow-risk', file: file.path,
           message:  `Unpinned action: ${action.replace('uses:', '').trim()}`,
-          detail:   'Using branch refs instead of pinned tags means a compromised action repo could inject malicious code.',
-          fix:      'Pin to a specific tag or commit SHA: e.g. uses: actions/checkout@v4',
+          detail:   'Branch refs can be updated silently — a compromised action repo could inject malicious code.',
+          fix:      'Pin to a specific tag or commit SHA.',
         })
       }
 
-      // Risk: GITHUB_TOKEN with excessive permissions
       if (content.includes('write-all') || (content.includes('contents: write') && content.includes('pull-requests: write'))) {
         findings.push({
-          severity: 'high',
-          type:     'workflow-risk',
-          file:     file.path,
+          severity: 'high', type: 'workflow-risk', file: file.path,
           message:  'Overly broad GITHUB_TOKEN permissions',
-          detail:   'Granting write access to multiple resources increases blast radius if the workflow is compromised.',
-          fix:      'Apply principle of least privilege — grant only the permissions each job actually needs.',
+          detail:   'write-all or combined write permissions increase blast radius.',
+          fix:      'Grant only the minimum permissions each job needs.',
         })
       }
-
     } catch {
       // skip
     }

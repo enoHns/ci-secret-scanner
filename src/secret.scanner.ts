@@ -1,8 +1,8 @@
 import * as core from '@actions/core'
 import { Octokit } from '@octokit/rest'
 import { Finding } from './types'
+import { getRepoFiles } from './git.utils'
 
-// Common secret patterns
 const SECRET_PATTERNS: { pattern: RegExp; type: string; severity: Finding['severity'] }[] = [
   { pattern: /(?:api[_-]?key|apikey)\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?/i,           type: 'API Key',          severity: 'critical' },
   { pattern: /(?:secret|token)\s*[:=]\s*['"]?([A-Za-z0-9_\-]{20,})['"]?/i,                  type: 'Secret/Token',     severity: 'critical' },
@@ -23,21 +23,15 @@ export async function scanSecrets(
 
   const findings: Finding[] = []
 
-  // Fetch all workflow files
   let workflowFiles: { path: string; sha: string }[] = []
   try {
-    const { data: tree } = await octokit.git.getTree({
-      owner, repo, tree_sha: 'HEAD', recursive: '1',
-    })
-    workflowFiles = tree.tree
-      .filter(f => f.path?.startsWith('.github/') && f.path.endsWith('.yml') || f.path?.endsWith('.yaml'))
-      .map(f => ({ path: f.path!, sha: f.sha! }))
+    workflowFiles = await getRepoFiles(octokit, owner, repo, '.github/')
   } catch {
-    core.warning('Could not fetch workflow file tree')
+    core.warning('Could not fetch workflow files')
     return []
   }
 
-  core.info(`  Found ${workflowFiles.length} workflow file(s) to scan`)
+  core.info(`  Found ${workflowFiles.length} file(s) to scan`)
 
   for (const file of workflowFiles) {
     try {
@@ -47,8 +41,6 @@ export async function scanSecrets(
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i]
-
-        // Skip if value looks like a GitHub Actions secret expression
         if (line.includes('${{ secrets.') || line.includes('${{ env.')) continue
 
         for (const { pattern, type, severity } of SECRET_PATTERNS) {
@@ -59,15 +51,15 @@ export async function scanSecrets(
               file:    file.path,
               line:    i + 1,
               message: `Potential ${type} found`,
-              detail:  `Line ${i + 1}: ${line.trim().substring(0, 80)}...`,
-              fix:     `Move this value to a GitHub Actions secret and reference it via \${{ secrets.YOUR_SECRET }}`,
+              detail:  `Line ${i + 1}: ${line.trim().substring(0, 80)}`,
+              fix:     `Move to a GitHub Actions secret: \${{ secrets.YOUR_SECRET }}`,
             })
-            break  // one finding per line
+            break
           }
         }
       }
     } catch {
-      // file unreadable — skip
+      // skip unreadable files
     }
   }
 
